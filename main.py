@@ -10,6 +10,8 @@ import asyncio
 import logging
 import sys
 import os
+from moviepy.editor import VideoFileClip
+import tempfile
 
 # Set up logging
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -17,7 +19,8 @@ logging.basicConfig(
     level=getattr(logging, log_level),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('bot.log')  # Add file logging
     ]
 )
 logger = logging.getLogger(__name__)
@@ -81,7 +84,35 @@ def is_blacklisted(post, blacklist):
         post_tags.update(tag_category)
     return bool(post_tags & blacklist)
 
+def convert_webm_to_mp4(webm_url):
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_webm:
+            # Download the WebM file
+            response = requests.get(webm_url)
+            response.raise_for_status()
+            temp_webm.write(response.content)
+            temp_webm_path = temp_webm.name
+
+        # Convert to MP4
+        mp4_path = temp_webm_path.rsplit('.', 1)[0] + '.mp4'
+        video = VideoFileClip(temp_webm_path)
+        video.write_videofile(mp4_path, codec='libx264')
+        video.close()
+
+        return mp4_path
+    except Exception as e:
+        logger.error(f"Error converting WebM to MP4: {e}")
+        return None
+    finally:
+        # Clean up the temporary WebM file
+        if os.path.exists(temp_webm_path):
+            os.remove(temp_webm_path)
+
 async def send_telegram_message(bot, post):
+    post_id = post['id']
+    file_url = post['file']['url']
+    file_ext = os.path.splitext(file_url)[1].lower()
+
     try:
         # Prepare the message text
         artist_tags = ', '.join(post['tags']['artist']) if post['tags']['artist'] else 'Unknown Artist'
@@ -90,21 +121,52 @@ async def send_telegram_message(bot, post):
                        f"*Characters:* {character_tags}\n" \
                        f"*Score:* {post['score']['total']}\n" \
                        f"*Favorites:* {post['fav_count']}\n" \
-                       f"[Original Post](https://e621.net/posts/{post['id']})"
+                       f"[Original Post](https://e621.net/posts/{post_id})"
 
-        # Get the animation file URL
-        file_url = post['file']['url']
-
-        # Send the animation with the caption
-        await bot.send_animation(
-            chat_id=TELEGRAM_CHANNEL_ID,
-            animation=file_url,
-            caption=message_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        logger.info(f"Successfully sent post {post['id']} to Telegram channel.")
+        if file_ext == '.webm':
+            logger.info(f"WebM file detected for post {post_id}. Converting to MP4...")
+            mp4_path = convert_webm_to_mp4(file_url)
+            if mp4_path:
+                with open(mp4_path, 'rb') as video_file:
+                    await bot.send_video(
+                        chat_id=TELEGRAM_CHANNEL_ID,
+                        video=video_file,
+                        caption=message_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        supports_streaming=True
+                    )
+                os.remove(mp4_path)  # Clean up the converted file
+                logger.info(f"Successfully sent converted MP4 for post {post_id} to Telegram channel.")
+            else:
+                logger.error(f"Failed to convert WebM to MP4 for post {post_id}. Skipping this post.")
+                return
+        else:
+            # Try to send as video first
+            try:
+                await bot.send_video(
+                    chat_id=TELEGRAM_CHANNEL_ID,
+                    video=file_url,
+                    caption=message_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    supports_streaming=True
+                )
+                logger.info(f"Successfully sent video for post {post_id} to Telegram channel.")
+            except TelegramError as e:
+                logger.warning(f"Failed to send as video for post {post_id}, falling back to animation. Error: {e}")
+                # Fall back to sending as animation
+                await bot.send_animation(
+                    chat_id=TELEGRAM_CHANNEL_ID,
+                    animation=file_url,
+                    caption=message_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                logger.info(f"Successfully sent animation for post {post_id} to Telegram channel.")
     except TelegramError as e:
-        logger.error(f"Failed to send post {post['id']} to Telegram: {e}")
+        logger.error(f"Failed to send post {post_id} to Telegram. Error: {e}")
+        logger.error(f"Problematic post details: ID: {post_id}, URL: {file_url}, File type: {file_ext}")
+    except Exception as e:
+        logger.error(f"Unexpected error while processing post {post_id}: {e}")
+        logger.error(f"Problematic post details: ID: {post_id}, URL: {file_url}, File type: {file_ext}")
 
 async def process_posts():
     logger.info(f"Running scheduled task at {datetime.now(timezone.utc).isoformat()}")
@@ -121,19 +183,22 @@ async def process_posts():
             # Add a delay to avoid hitting rate limits
             await asyncio.sleep(5)
     else:
-        logger.warning("No data retrieved.")
+        logger.warning("No data retrieved from e621.")
 
-def run_scheduler():
-    schedule.every().day.at("00:00").do(lambda: asyncio.run(process_posts()))
-    
+async def run_scheduler():
     while True:
-        schedule.run_pending()
-        time.sleep(60)  # Sleep for 60 seconds before checking again
+        now = datetime.now(timezone.utc)
+        if now.hour == 0 and now.minute == 0:
+            try:
+                await process_posts()
+            except Exception as e:
+                logger.error(f"Error occurred during scheduled task: {e}")
+        await asyncio.sleep(60)  # Sleep for 60 seconds before checking again
 
 if __name__ == "__main__":
     logger.info("Starting scheduler. Press Ctrl+C to exit.")
     try:
-        run_scheduler()
+        asyncio.run(run_scheduler())
     except KeyboardInterrupt:
         logger.info("Scheduler stopped.")
     except Exception as e:
