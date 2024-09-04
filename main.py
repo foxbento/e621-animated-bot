@@ -12,7 +12,6 @@ import asyncio
 from datetime import datetime, timedelta
 from moviepy.editor import VideoFileClip
 import gc
-import schedule
 import time
 import psutil
 
@@ -209,12 +208,12 @@ def log_container_stats():
         logger.error(f"Failed to log container stats: {str(e)}")
 
 async def run_scheduler():
-    schedule.every().day.at("00:00", "UTC").do(lambda: asyncio.create_task(process_posts()))
-    schedule.every(15).minutes.do(log_container_stats)
-
     while True:
-        schedule.run_pending()
-        await asyncio.sleep(1)
+        now = datetime.now(datetime.timezone.utc)
+        if now.hour == 0 and now.minute == 0:
+            await process_posts()
+        log_container_stats()
+        await asyncio.sleep(60)  # Sleep for 1 minute before checking again
 
 if __name__ == "__main__":
     logger.info("Starting scheduler. Press Ctrl+C to exit.")
