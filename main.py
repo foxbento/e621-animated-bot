@@ -9,10 +9,9 @@ import os
 import re
 import tempfile
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from moviepy.editor import VideoFileClip
 import gc
-import time
 import psutil
 
 # Load environment variables
@@ -58,7 +57,7 @@ def load_blacklist():
 blacklist = load_blacklist()
 
 def fetch_e621_posts():
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     params = {
         "tags": f"animated score:>30 date:>={yesterday} rating:e",
         "limit": 320
@@ -183,7 +182,7 @@ async def send_telegram_message(bot, post):
         logger.error(f"Unexpected error sending post {post['id']} to Telegram: {e}")
 
 async def process_posts():
-    logger.info(f"Running scheduled task at {datetime.now(datetime.timezone.utc).isoformat()}")
+    logger.info(f"Running scheduled task at {datetime.now(timezone.utc).isoformat()}")
     posts = fetch_e621_posts()
     if posts:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -209,11 +208,14 @@ def log_container_stats():
 
 async def run_scheduler():
     while True:
-        now = datetime.now(datetime.timezone.utc)
+        now = datetime.now(timezone.utc)
         if now.hour == 0 and now.minute == 0:
-            await process_posts()
+            try:
+                await process_posts()
+            except Exception as e:
+                logger.error(f"Error occurred during scheduled task: {e}")
         log_container_stats()
-        await asyncio.sleep(60)  # Sleep for 1 minute before checking again
+        await asyncio.sleep(60)  # Sleep for 60 seconds before checking again
 
 if __name__ == "__main__":
     logger.info("Starting scheduler. Press Ctrl+C to exit.")
