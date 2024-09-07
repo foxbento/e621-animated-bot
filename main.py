@@ -12,13 +12,16 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from moviepy.editor import VideoFileClip
 import gc
-import psutil
+import warnings
+
+# Suppress moviepy warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='moviepy')
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Get environment variables
@@ -45,8 +48,13 @@ headers = {
     "User-Agent": f"TelegramBot/1.0 (by {E621_USERNAME} on e621)"
 }
 
-# Load blacklist
 def load_blacklist():
+    """
+    Load the blacklist from a JSON file.
+    
+    Returns:
+        set: A set of blacklisted tags.
+    """
     try:
         with open('blacklist.json', 'r') as f:
             return set(json.load(f))
@@ -57,6 +65,12 @@ def load_blacklist():
 blacklist = load_blacklist()
 
 def fetch_e621_posts():
+    """
+    Fetch posts from e621.net API.
+    
+    Returns:
+        list: A list of post dictionaries, or None if the request fails.
+    """
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     params = {
         "tags": f"animated score:>30 date:>={yesterday} rating:e",
@@ -71,6 +85,15 @@ def fetch_e621_posts():
         return None
 
 def is_blacklisted(post):
+    """
+    Check if a post contains any blacklisted tags.
+    
+    Args:
+        post (dict): A post dictionary from e621.net API.
+    
+    Returns:
+        bool: True if the post contains a blacklisted tag, False otherwise.
+    """
     post_tags = set()
     for tag_category in post['tags'].values():
         post_tags.update(tag_category)
@@ -78,12 +101,27 @@ def is_blacklisted(post):
 
 def escape_markdown(text):
     """
-    Escape Markdown special characters.
+    Escape Markdown special characters in a string.
+    
+    Args:
+        text (str): The text to escape.
+    
+    Returns:
+        str: The escaped text.
     """
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def convert_webm_to_mp4(webm_url):
+    """
+    Convert a WebM file to MP4 format.
+    
+    Args:
+        webm_url (str): The URL of the WebM file.
+    
+    Returns:
+        str: The path to the converted MP4 file, or None if conversion fails.
+    """
     try:
         with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_webm:
             # Download the WebM file
@@ -111,6 +149,13 @@ def convert_webm_to_mp4(webm_url):
             os.remove(temp_webm_path)
 
 async def send_telegram_message(bot, post):
+    """
+    Send a post to the Telegram channel.
+    
+    Args:
+        bot (telegram.Bot): The Telegram bot instance.
+        post (dict): A post dictionary from e621.net API.
+    """
     try:
         # Prepare the message text
         artist_tags = ', '.join(post['tags']['artist']) if post['tags']['artist'] else 'Unknown Artist'
@@ -182,6 +227,9 @@ async def send_telegram_message(bot, post):
         logger.error(f"Unexpected error sending post {post['id']} to Telegram: {e}")
 
 async def process_posts():
+    """
+    Fetch posts from e621.net and send them to the Telegram channel.
+    """
     logger.info(f"Running scheduled task at {datetime.now(timezone.utc).isoformat()}")
     posts = fetch_e621_posts()
     if posts:
@@ -197,16 +245,10 @@ async def process_posts():
     else:
         logger.error("Failed to fetch posts, cannot proceed with scheduled task.")
 
-def log_container_stats():
-    try:
-        memory_usage = psutil.virtual_memory().percent
-        cpu_usage = psutil.cpu_percent()
-        disk_usage = psutil.disk_usage('/').percent
-        logger.info(f"Container Stats - Memory: {memory_usage}%, CPU: {cpu_usage}%, Disk: {disk_usage}%")
-    except Exception as e:
-        logger.error(f"Failed to log container stats: {str(e)}")
-
 async def run_scheduler():
+    """
+    Run the scheduler to process posts at midnight UTC daily.
+    """
     while True:
         now = datetime.now(timezone.utc)
         if now.hour == 0 and now.minute == 0:
@@ -214,7 +256,6 @@ async def run_scheduler():
                 await process_posts()
             except Exception as e:
                 logger.error(f"Error occurred during scheduled task: {e}")
-        log_container_stats()
         await asyncio.sleep(60)  # Sleep for 60 seconds before checking again
 
 if __name__ == "__main__":
