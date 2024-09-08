@@ -174,32 +174,24 @@ async def send_telegram_message(bot, post, channel_id, is_second_channel=False):
 
         file_url = post['file']['url']
         file_size = post['file']['size']
+        file_ext = os.path.splitext(file_url)[1].lower()
         logger.debug(f"File URL: {file_url}")
         logger.debug(f"File size: {file_size} bytes")
+        logger.debug(f"File extension: {file_ext}")
 
-        if file_url.lower().endswith('.webm'):
-            logger.info(f"WebM file detected for post {post['id']}. Converting to MP4...")
-            mp4_path = convert_webm_to_mp4(file_url)
-            if mp4_path:
-                with open(mp4_path, 'rb') as video_file:
-                    await bot.send_video(
-                        chat_id=channel_id,
-                        video=video_file,
-                        caption=message_text,
-                        parse_mode='MarkdownV2',
-                        supports_streaming=True
-                    )
-                os.remove(mp4_path)
-                logger.info(f"Successfully sent converted MP4 for post {post['id']} to Telegram channel.")
-                if is_second_channel:
-                    POSTS_SENT_2.inc()
-                else:
-                    POSTS_SENT.inc()
+        if file_ext in ['.jpg', '.jpeg', '.png']:
+            await bot.send_photo(
+                chat_id=channel_id,
+                photo=file_url,
+                caption=message_text,
+                parse_mode='MarkdownV2'
+            )
+            logger.info(f"Successfully sent photo for post {post['id']} to Telegram channel.")
+            if is_second_channel:
+                POSTS_SENT_2.inc()
             else:
-                logger.error(f"Failed to convert WebM to MP4 for post {post['id']}. Skipping this post.")
-                CONVERSION_ERRORS.inc()
-                return
-        else:
+                POSTS_SENT.inc()
+        elif file_ext in ['.gif', '.mp4']:
             try:
                 await bot.send_video(
                     chat_id=channel_id,
@@ -226,6 +218,31 @@ async def send_telegram_message(bot, post, channel_id, is_second_channel=False):
                     POSTS_SENT_2.inc()
                 else:
                     POSTS_SENT.inc()
+        elif file_ext == '.webm':
+            logger.info(f"WebM file detected for post {post['id']}. Converting to MP4...")
+            mp4_path = convert_webm_to_mp4(file_url)
+            if mp4_path:
+                with open(mp4_path, 'rb') as video_file:
+                    await bot.send_video(
+                        chat_id=channel_id,
+                        video=video_file,
+                        caption=message_text,
+                        parse_mode='MarkdownV2',
+                        supports_streaming=True
+                    )
+                os.remove(mp4_path)
+                logger.info(f"Successfully sent converted MP4 for post {post['id']} to Telegram channel.")
+                if is_second_channel:
+                    POSTS_SENT_2.inc()
+                else:
+                    POSTS_SENT.inc()
+            else:
+                logger.error(f"Failed to convert WebM to MP4 for post {post['id']}. Skipping this post.")
+                CONVERSION_ERRORS.inc()
+                return
+        else:
+            logger.warning(f"Unsupported file type {file_ext} for post {post['id']}. Skipping.")
+            return
 
     except TimedOut as e:
         logger.error(f"Timed out sending post {post['id']} to Telegram. File size: {file_size} bytes. Error: {e}")
